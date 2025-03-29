@@ -98,4 +98,4 @@ Mô hình được lưu tự động trong quá trình huấn luyện vào thư 
 
 ## Tác giả
 
-© 2023 BotGomuko Team
+© 2025 BotGomuko Team

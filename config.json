@@ -10,11 +10,11 @@
     "epsilon_start": 1.0,
     "epsilon_end": 0.05,
     "epsilon_decay": 0.9998,
-    "batch_size": 512,
+    "batch_size": 256,
     "memory_size": 500000
   },
   "evaluation": {
-    "num_games": 50
+    "num_games": 10
   },
   "models_dir": "saved_models"
 }

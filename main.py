@@ -40,8 +40,9 @@ def play_against_ai(agent_path: str = None, player_first: bool = True,
     
     if agent_path and os.path.exists(agent_path):
         agent.load(agent_path)
+        print(f"Đã tải mô hình AI. Epsilon hiện tại: {agent.epsilon:.4f}")
     else:
-        print("Warning: No model loaded. AI will play randomly.")
+        print("Cảnh báo: Không tìm thấy mô hình. AI sẽ đi ngẫu nhiên.")
     
     # Render game
     game_state = game.get_state()
@@ -55,6 +56,7 @@ def play_against_ai(agent_path: str = None, player_first: bool = True,
     if not player_first and not game.is_game_over():
         print("AI đang suy nghĩ...")
         ai_action = agent.get_action(game.get_state())
+        print(f"AI đi: ({ai_action[0]}, {ai_action[1]})")
         game.make_move(ai_action[0], ai_action[1])
         renderer.render_board(game.get_state()['board'], game.board.last_move)
     
@@ -82,6 +84,9 @@ def play_against_ai(agent_path: str = None, player_first: bool = True,
                             # AI đi
                             print("AI đang suy nghĩ...")
                             ai_action = agent.get_action(game.get_state())
+                            # Hiển thị nước đi của AI
+                            print(f"AI đi: ({ai_action[0]}, {ai_action[1]})")
+                            
                             game.make_move(ai_action[0], ai_action[1])
                             renderer.render_board(game.get_state()['board'], game.board.last_move)
                             
@@ -159,6 +164,8 @@ def self_train(total_episodes: int = 10000, save_interval: int = 100,
     print(f"Lưu mô hình mỗi {save_interval} tập")
     print(f"Sử dụng TensorBoard: {use_tensorboard}")
     print(f"Đường dẫn mô hình: {model_path}")
+    print("CHÚ Ý: CẦN HUẤN LUYỆN ÍT NHẤT 5000-10000 TẬP ĐỂ AI CHƠI TỐT!")
+    print(f"Hiện tại bạn chỉ huấn luyện {total_episodes} tập, có thể chưa đủ.")
     
     if torch.cuda.is_available():
         print(f"CUDA sẵn sàng: {torch.cuda.get_device_name(0)}")

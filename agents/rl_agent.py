@@ -200,6 +200,7 @@ class RLAgent(Agent):
         
         # Siêu tham số
         self.gamma = gamma
+        self.epsilon_start = epsilon_start
         self.epsilon = epsilon_start
         self.epsilon_end = epsilon_end
         self.epsilon_decay = epsilon_decay
@@ -223,6 +224,10 @@ class RLAgent(Agent):
             'rewards': [],
             'epsilons': []
         }
+        
+        # Biến debug
+        self.debug_top_moves = []
+        self.debug_top_values = []
     
     def _preprocess_state(self, game_state: Dict[str, Any]) -> torch.Tensor:
         """
@@ -266,9 +271,15 @@ class RLAgent(Agent):
         if not valid_moves:
             raise ValueError("Không có nước đi hợp lệ")
         
+        # Xóa thông tin debug cũ
+        self.debug_top_moves = []
+        self.debug_top_values = []
+        
         # Thăm dò ngẫu nhiên
         if random.random() < self.epsilon:
-            return random.choice(valid_moves)
+            chosen_move = random.choice(valid_moves)
+            print(f"[AI quyết định] Đi ngẫu nhiên: {chosen_move} (epsilon={self.epsilon:.4f})")
+            return chosen_move
         
         # Chọn nước đi tốt nhất theo mô hình
         with torch.no_grad():
@@ -285,6 +296,21 @@ class RLAgent(Agent):
             # Chỉ xét Q-value cho các nước đi hợp lệ
             masked_q_values = q_values * valid_mask
             masked_q_values[valid_mask == 0] = float('-inf')
+            
+            # Lưu top 3 nước đi và giá trị Q cho debug
+            if len(valid_moves) >= 3:
+                top_k = min(3, len(valid_moves))
+                top_indices = torch.topk(masked_q_values, top_k).indices.cpu().numpy()
+                top_values = torch.topk(masked_q_values, top_k).values.cpu().numpy()
+                
+                # Chuyển đổi chỉ số thành tọa độ (x, y)
+                self.debug_top_moves = [(idx // self.board_size, idx % self.board_size) for idx in top_indices]
+                self.debug_top_values = [float(val) for val in top_values]
+                
+                # Hiển thị thông tin về quyết định của AI
+                print("\n[PHÂN TÍCH QUYẾT ĐỊNH CỦA AI]")
+                for i, ((x, y), val) in enumerate(zip(self.debug_top_moves, self.debug_top_values)):
+                    print(f"  Lựa chọn #{i+1}: ({x}, {y}) với Q-value = {val:.6f}")
             
             # Chọn nước đi có Q-value cao nhất
             best_idx = torch.argmax(masked_q_values).item()
@@ -429,8 +455,15 @@ class RLAgent(Agent):
             self.policy_net.load_state_dict(checkpoint['policy_net'])
             self.target_net.load_state_dict(checkpoint['target_net'])
             self.optimizer.load_state_dict(checkpoint['optimizer'])
-            self.epsilon = checkpoint['epsilon']
-            self.steps_done = checkpoint['steps_done']
+            
+            # Đảm bảo các trường quan trọng được tải chính xác
+            if 'epsilon' in checkpoint:
+                self.epsilon = checkpoint['epsilon']
+            else:
+                self.epsilon = self.epsilon_end  # Sử dụng giá trị an toàn
+                print("Cảnh báo: epsilon không có trong checkpoint, sử dụng epsilon_end")
+                
+            self.steps_done = checkpoint.get('steps_done', 0)
             
             if 'training_info' in checkpoint:
                 self.training_info = checkpoint['training_info']
@@ -440,6 +473,15 @@ class RLAgent(Agent):
             
         except Exception as e:
             print(f"Error loading model: {e}")
+            print("Thử tải mô hình với cấu hình thay thế...")
+            try:
+                checkpoint = torch.load(filepath, map_location=self.device)
+                self.policy_net.load_state_dict(checkpoint['policy_net'])
+                self.target_net.load_state_dict(checkpoint['policy_net'])  # Backup: sử dụng policy net cho target net
+                self.epsilon = self.epsilon_end  # Sử dụng giá trị thấp để khai thác hơn là thăm dò
+                print(f"Đã tải mô hình thành công với cấu hình thay thế. Epsilon = {self.epsilon}")
+            except Exception as e2:
+                print(f"Tải mô hình hoàn toàn thất bại: {e2}")
     
     def get_training_stats(self) -> Dict[str, List[float]]:
         """
