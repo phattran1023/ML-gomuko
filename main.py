@@ -15,9 +15,13 @@ from game.board import Board
 from game.game import GomokuGame
 from game.rendering import Renderer
 from agents.rl_agent import RLAgent
+from agents.dqn_mcts_agent import DQNMCTSAgent
 from utils.utils import set_seed, load_config
+from training.opponent_pool import OpponentPool
+from training.curriculum_learning import CurriculumGenerator
+from training_monitor import TrainingMonitor
 
-def play_against_ai(agent_path: str = None, player_first: bool = True, 
+def play_against_ai(agent_path: str = None, player_first: bool = True,  
                    board_size: int = 15, win_length: int = 5) -> None:
     """
     Chơi game caro chống lại AI
@@ -68,8 +72,7 @@ def play_against_ai(agent_path: str = None, player_first: bool = True,
             # Người chơi đi
             if event.type == pygame.MOUSEBUTTONDOWN and not game.is_game_over() and game.current_player == player_id:
                 x, y = event.pos
-                # Chuyển đổi tọa độ chuột sang tọa độ bàn cờ (điều chỉnh cho ô vuông)
-                # Trừ margin và chia cho cell_size để xác định ô (không còn là điểm giao)
+                # Chuyển đổi tọa độ chuột sang tọa độ bàn cờ
                 col = int((x - renderer.margin) / renderer.cell_size)
                 row = int((y - renderer.margin) / renderer.cell_size)
                 
@@ -84,8 +87,83 @@ def play_against_ai(agent_path: str = None, player_first: bool = True,
                             # AI đi
                             print("AI đang suy nghĩ...")
                             ai_action = agent.get_action(game.get_state())
-                            # Hiển thị nước đi của AI
                             print(f"AI đi: ({ai_action[0]}, {ai_action[1]})")
+                            
+                            game.make_move(ai_action[0], ai_action[1])
+                            renderer.render_board(game.get_state()['board'], game.board.last_move)
+                            
+                            # Kiểm tra kết thúc
+                            if game.is_game_over():
+                                renderer.render_game_over(game.get_winner())
+        
+        clock.tick(30)
+    
+    # Đóng game
+    renderer.close()
+
+def play_with_dqn_mcts(agent_path: str = None, player_first: bool = True, 
+                     board_size: int = 15, win_length: int = 5,
+                     num_simulations: int = 100) -> None:
+    """
+    Chơi game caro chống lại DQN-MCTS AI
+    
+    Args:
+        agent_path: Đường dẫn đến mô hình DQN đã huấn luyện
+        player_first: True nếu người chơi đi trước (quân đen)
+        board_size: Kích thước bàn cờ
+        win_length: Số quân liên tiếp để chiến thắng
+        num_simulations: Số lần mô phỏng MCTS cho mỗi nước đi
+    """
+    # Khởi tạo trò chơi
+    game = GomokuGame(board_size, win_length)
+    renderer = Renderer(board_size)
+    
+    # Khởi tạo agent
+    player_id = Board.BLACK if player_first else Board.WHITE
+    ai_id = Board.WHITE if player_first else Board.BLACK
+    
+    agent = DQNMCTSAgent(ai_id, model_path=agent_path, board_size=board_size, 
+                        num_simulations=num_simulations)
+    
+    # Render game
+    game_state = game.get_state()
+    renderer.render_board(game_state['board'], game.board.last_move)
+    
+    # Game loop
+    running = True
+    clock = pygame.time.Clock()
+    
+    # Nếu AI đi trước
+    if not player_first and not game.is_game_over():
+        print("AI đang suy nghĩ...")
+        ai_action = agent.get_action(game.get_state())
+        print(f"DQN-MCTS AI đi: {ai_action}")
+        game.make_move(ai_action[0], ai_action[1])
+        renderer.render_board(game.get_state()['board'], game.board.last_move)
+    
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            
+            # Người chơi đi
+            if event.type == pygame.MOUSEBUTTONDOWN and not game.is_game_over() and game.current_player == player_id:
+                x, y = event.pos
+                col = int((x - renderer.margin) / renderer.cell_size)
+                row = int((y - renderer.margin) / renderer.cell_size)
+                
+                if 0 <= row < board_size and 0 <= col < board_size:
+                    if game.make_move(row, col):
+                        renderer.render_board(game.get_state()['board'], game.board.last_move)
+                        
+                        # Kiểm tra kết thúc
+                        if game.is_game_over():
+                            renderer.render_game_over(game.get_winner())
+                        else:
+                            # AI đi
+                            print("DQN-MCTS AI đang suy nghĩ...")
+                            ai_action = agent.get_action(game.get_state())
+                            print(f"DQN-MCTS AI đi: {ai_action}")
                             
                             game.make_move(ai_action[0], ai_action[1])
                             renderer.render_board(game.get_state()['board'], game.board.last_move)
@@ -101,16 +179,20 @@ def play_against_ai(agent_path: str = None, player_first: bool = True,
 
 def self_train(total_episodes: int = 10000, save_interval: int = 100, 
                model_path: str = None, resume: bool = False, 
-               use_tensorboard: bool = True) -> None:
+               use_tensorboard: bool = True, verbose: int = 1,
+               use_curriculum: bool = True, use_pool: bool = True) -> None:
     """
     Tự động huấn luyện AI thông qua tự chơi
     
     Args:
         total_episodes: Tổng số tập huấn luyện
-        save_interval: Số tập giữa mỗi lần lưu và đánh giá 
+        save_interval: Số tập giữa mỗi lần lưu và đánh giá
         model_path: Đường dẫn để lưu/tải mô hình
         resume: True để tiếp tục từ mô hình đã lưu
         use_tensorboard: Sử dụng TensorBoard để theo dõi quá trình huấn luyện
+        verbose: Mức độ chi tiết của log (0: yên lặng, 1: thông thường, 2: chi tiết)
+        use_curriculum: Sử dụng huấn luyện theo giáo trình
+        use_pool: Sử dụng opponent pool
     """
     # Tải cấu hình
     config = load_config("config.json")
@@ -120,7 +202,7 @@ def self_train(total_episodes: int = 10000, save_interval: int = 100,
     # Đặt đường dẫn mô hình mặc định
     if model_path is None:
         model_path = f"saved_models/rl_self_train.pt"
-        
+    
     # Đảm bảo thư mục tồn tại
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
     
@@ -146,6 +228,12 @@ def self_train(total_episodes: int = 10000, save_interval: int = 100,
         print(f"Đang tải mô hình từ {model_path}...")
         agent.load(model_path)
     
+    # Khởi tạo curriculum learning nếu được yêu cầu
+    curriculum = CurriculumGenerator(board_size) if use_curriculum else None
+    
+    # Khởi tạo opponent pool nếu được yêu cầu
+    opponent_pool = OpponentPool(max_size=5) if use_pool else None
+    
     # Thống kê huấn luyện
     stats = {
         'wins_black': 0,
@@ -158,6 +246,9 @@ def self_train(total_episodes: int = 10000, save_interval: int = 100,
         'win_rates': [],
         'episode_lengths': []
     }
+    
+    # Khởi tạo training monitor nếu verbose > 0
+    monitor = TrainingMonitor() if verbose > 0 else None
     
     print("\n==== BẮT ĐẦU TỰ HUẤN LUYỆN ====")
     print(f"Tổng số tập: {total_episodes}")
@@ -175,8 +266,26 @@ def self_train(total_episodes: int = 10000, save_interval: int = 100,
     # Main training loop
     try:
         for episode in tqdm(range(total_episodes)):
-            # Khởi tạo trò chơi mới
-            game = GomokuGame(board_size, win_length)
+            # Định kỳ làm sạch bộ nhớ CUDA (mỗi 50 episodes)
+            if torch.cuda.is_available() and episode > 0 and episode % 50 == 0:
+                torch.cuda.empty_cache()
+                
+            # Khởi tạo trò chơi mới, sử dụng curriculum nếu được bật
+            if use_curriculum and curriculum:
+                game = curriculum.get_curriculum_game(episode, total_episodes)
+            else:
+                game = GomokuGame(board_size, win_length)
+            
+            # Lựa chọn đối thủ từ pool hoặc chính agent
+            use_opponent_from_pool = opponent_pool and episode % 10 == 0 and episode > 0
+            opponent = None
+            
+            if use_opponent_from_pool:
+                opponent = opponent_pool.get_random_opponent(board_size)
+            
+            # Xác định loại đối thủ và giai đoạn curriculum
+            opponent_type = "pool" if use_opponent_from_pool and opponent else "self"
+            curriculum_stage = curriculum.stage if use_curriculum and curriculum else 0
             
             # Lưu trữ trải nghiệm cho cả hai người chơi
             experiences = {
@@ -191,8 +300,15 @@ def self_train(total_episodes: int = 10000, save_interval: int = 100,
                 current_state = game.get_state()
                 current_player = current_state['current_player']
                 
-                # Lấy hành động từ agent (luôn sử dụng cùng một agent)
-                action = agent.get_action(current_state)
+                # Lấy hành động từ agent hoặc opponent
+                if use_opponent_from_pool and opponent and current_player == Board.WHITE:
+                    # Dùng opponent từ pool cho quân trắng
+                    opponent.player_id = Board.WHITE
+                    action = opponent.get_action(current_state, verbose=False)
+                else:
+                    # Dùng agent chính
+                    agent.player_id = current_player
+                    action = agent.get_action(current_state, verbose=(verbose >= 2))
                 
                 # Lưu trạng thái hiện tại và hành động
                 experiences[current_player].append((current_state, action))
@@ -220,8 +336,18 @@ def self_train(total_episodes: int = 10000, save_interval: int = 100,
                 reward_white = 1.0
             else:  # Hòa
                 stats['draws'] += 1
-                reward_black = 0.1
-                reward_white = 0.1
+                reward_black = -0.1  # Thay đổi từ 0.1 thành -0.1
+                reward_white = -0.1  # Thay đổi từ 0.1 thành -0.1
+            
+            # Thêm khen thưởng theo thời gian (càng thắng nhanh càng tốt)
+            max_expected_moves = board_size * board_size // 2
+            time_reward = max(0, (max_expected_moves - move_count) / max_expected_moves) * 1.0  # Tăng từ 0.5 lên 1.0
+            
+            # Điều chỉnh phần thưởng dựa trên thời gian
+            if winner == Board.BLACK:
+                reward_black += time_reward
+            elif winner == Board.WHITE:
+                reward_white += time_reward
             
             # Cập nhật model từ trải nghiệm
             final_state = game.get_state()
@@ -241,23 +367,38 @@ def self_train(total_episodes: int = 10000, save_interval: int = 100,
                 # Cập nhật agent
                 agent.update(state, action, reward_black if done else 0, next_state, done)
             
-            # Cập nhật quân trắng
-            for i, (state, action) in enumerate(experiences[Board.WHITE]):
-                # Nếu đây là trạng thái cuối cùng
-                if i == len(experiences[Board.WHITE]) - 1:
-                    next_state = final_state
-                    done = True
-                else:
-                    # Lấy trạng thái sau khi đối thủ đi
-                    next_state = experiences[Board.BLACK][i+1][0]
-                    done = False
-                
-                # Cập nhật agent
-                agent.update(state, action, reward_white if done else 0, next_state, done)
+            # Cập nhật quân trắng - chỉ khi không sử dụng opponent từ pool
+            if not use_opponent_from_pool:
+                for i, (state, action) in enumerate(experiences[Board.WHITE]):
+                    # Nếu đây là trạng thái cuối cùng
+                    if i == len(experiences[Board.WHITE]) - 1:
+                        next_state = final_state
+                        done = True
+                    else:
+                        # Lấy trạng thái sau khi đối thủ đi
+                        next_state = experiences[Board.BLACK][i+1][0]
+                        done = False
+                    
+                    # Cập nhật agent
+                    agent.update(state, action, reward_white if done else 0, next_state, done)
             
             # Tính tỷ lệ thắng của quân đen
             black_win_rate = stats['wins_black'] / stats['episodes_done']
             stats['win_rates'].append(black_win_rate)
+            
+            # Log episode vào monitor
+            if monitor and (episode + 1) % 10 == 0:  # Log mỗi 10 tập để giảm lưu trữ
+                monitor.log_episode(
+                    episode + 1,
+                    stats['wins_black'],
+                    stats['wins_white'],
+                    stats['draws'],
+                    opponent_type,
+                    curriculum_stage,
+                    stats['avg_length'],
+                    agent.epsilon,
+                    agent.training_info['losses'][-1] if agent.training_info['losses'] else None
+                )
             
             # Log to TensorBoard
             if use_tensorboard and writer:
@@ -274,12 +415,12 @@ def self_train(total_episodes: int = 10000, save_interval: int = 100,
                     writer.add_scalar('Training/QValue', sum(agent.training_info['q_values'][-10:]) / 10, episode)
             
             # Log to console
-            if (episode + 1) % 100 == 0:
+            if (episode + 1) % 100 == 0 or verbose >= 1:
                 elapsed_time = time.time() - stats['start_time']
                 hours, remainder = divmod(elapsed_time, 3600)
                 minutes, seconds = divmod(remainder, 60)
                 
-                tqdm.write(f"\nTập {episode+1}/{total_episodes} | Thời gian: {int(hours)}h {int(minutes)}m {int(seconds)}s")
+                tqdm.write(f"\n==== TẬP {episode+1}/{total_episodes} | Thời gian: {int(hours)}h {int(minutes)}m {int(seconds)}s ====")
                 tqdm.write(f"Quân đen thắng: {stats['wins_black']} ({black_win_rate:.4f})")
                 tqdm.write(f"Quân trắng thắng: {stats['wins_white']} ({stats['wins_white']/stats['episodes_done']:.4f})")
                 tqdm.write(f"Hòa: {stats['draws']} ({stats['draws']/stats['episodes_done']:.4f})")
@@ -287,17 +428,32 @@ def self_train(total_episodes: int = 10000, save_interval: int = 100,
                 tqdm.write(f"Epsilon: {agent.epsilon:.6f}")
                 if agent.training_info['losses']:
                     tqdm.write(f"Loss gần đây: {agent.training_info['losses'][-1]:.6f}")
+                tqdm.write("=" * 80)
             
-            # Lưu mô hình định kỳ
+            # Lưu mô hình định kỳ và cập nhật opponent pool
             if (episode + 1) % save_interval == 0:
                 checkpoint_path = f"{os.path.splitext(model_path)[0]}_ep{episode+1}.pt"
                 agent.save(checkpoint_path)
                 agent.save(model_path)  # Lưu mô hình chính
                 
+                # Cập nhật opponent pool
+                if opponent_pool:
+                    opponent_pool.add_model(checkpoint_path)
+                
                 # Vẽ biểu đồ tiến trình
                 if (episode + 1) % (save_interval * 10) == 0:
                     plot_path = f"{os.path.splitext(model_path)[0]}_progress_ep{episode+1}.png"
                     plot_training_progress(stats, agent.training_info, plot_path)
+                
+                # Nếu đang ở checkpoint, vẽ biểu đồ phân tích đối thủ và curriculum
+                if monitor:
+                    opponent_chart = f"{os.path.splitext(model_path)[0]}_opponents_ep{episode+1}.png"
+                    curriculum_chart = f"{os.path.splitext(model_path)[0]}_curriculum_ep{episode+1}.png"
+                    win_rates_chart = f"{os.path.splitext(model_path)[0]}_win_rates_ep{episode+1}.png"
+                    
+                    monitor.plot_opponent_distribution(opponent_chart)
+                    monitor.plot_curriculum_progress(curriculum_chart)
+                    monitor.plot_win_rates(save_path=win_rates_chart)
     
     except KeyboardInterrupt:
         print("\nHuấn luyện bị ngắt bởi người dùng")
@@ -453,14 +609,21 @@ def check_cuda_compatibility():
 
 def main():
     parser = argparse.ArgumentParser(description='Gomoku (Caro) AI Self-Learning')
-    
     subparsers = parser.add_subparsers(dest='command')
     
     # Play command
-    play_parser = subparsers.add_parser('play', help='Chơi caro chống lại AI')
+    play_parser = subparsers.add_parser('play', help='Chơi caro chống lại AI (DQN)')
     play_parser.add_argument('--model', type=str, default='saved_models/rl_self_train.pt', 
                             help='Đường dẫn đến mô hình đã huấn luyện')
     play_parser.add_argument('--ai-first', action='store_true', help='AI đi trước')
+    
+    # Play with DQN-MCTS command
+    dqn_mcts_play_parser = subparsers.add_parser('play-dqn-mcts', help='Chơi caro chống lại DQN-MCTS AI')
+    dqn_mcts_play_parser.add_argument('--model', type=str, default='saved_models/rl_self_train.pt', 
+                                     help='Đường dẫn đến mô hình DQN đã huấn luyện')
+    dqn_mcts_play_parser.add_argument('--ai-first', action='store_true', help='AI đi trước')
+    dqn_mcts_play_parser.add_argument('--simulations', type=int, default=100, 
+                                     help='Số lần mô phỏng MCTS cho mỗi nước đi')
     
     # Self-train command
     train_parser = subparsers.add_parser('train', help='Tự huấn luyện AI')
@@ -470,10 +633,16 @@ def main():
                              help='Đường dẫn để lưu/tải mô hình')
     train_parser.add_argument('--resume', action='store_true', help='Tiếp tục huấn luyện từ mô hình đã lưu')
     train_parser.add_argument('--no-tensorboard', action='store_true', help='Tắt TensorBoard logging')
+    train_parser.add_argument('--verbose', type=int, default=1, choices=[0, 1, 2],
+                             help='Mức độ chi tiết của log (0: yên lặng, 1: thông thường, 2: chi tiết)')
+    train_parser.add_argument('--curriculum', action='store_true',
+                             help='Sử dụng curriculum learning')
+    train_parser.add_argument('--no-opponent-pool', action='store_true',
+                             help='Không sử dụng opponent pool')
     
-    # CUDA check command
+    # CUDA compatibility check command
     cuda_parser = subparsers.add_parser('cuda-check', help='Kiểm tra tương thích CUDA')
-    
+
     # Seed
     parser.add_argument('--seed', type=int, help='Seed cho tính ngẫu nhiên')
     
@@ -485,8 +654,12 @@ def main():
     
     if args.command == 'play':
         play_against_ai(args.model, not args.ai_first)
+    elif args.command == 'play-dqn-mcts':
+        play_with_dqn_mcts(args.model, not args.ai_first, num_simulations=args.simulations)
     elif args.command == 'train':
-        self_train(args.episodes, args.save_interval, args.model, args.resume, not args.no_tensorboard)
+        self_train(args.episodes, args.save_interval, args.model, args.resume, 
+                  not args.no_tensorboard, args.verbose, 
+                  use_curriculum=args.curriculum, use_pool=not args.no_opponent_pool)
     elif args.command == 'cuda-check':
         check_cuda_compatibility()
     else:

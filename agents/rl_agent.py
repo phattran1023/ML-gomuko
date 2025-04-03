@@ -256,12 +256,13 @@ class RLAgent(Agent):
         
         return torch.FloatTensor(state).unsqueeze(0).to(self.device)
     
-    def get_action(self, game_state: Dict[str, Any]) -> Tuple[int, int]:
+    def get_action(self, game_state: Dict[str, Any], verbose: bool = True) -> Tuple[int, int]:
         """
         Chọn một hành động dựa trên chính sách epsilon-greedy
         
         Args:
             game_state: Trạng thái trò chơi hiện tại
+            verbose: Có hiển thị thông tin debug hay không
             
         Returns:
             Tuple[int, int]: Tọa độ (x, y) của nước đi được chọn
@@ -278,7 +279,8 @@ class RLAgent(Agent):
         # Thăm dò ngẫu nhiên
         if random.random() < self.epsilon:
             chosen_move = random.choice(valid_moves)
-            print(f"[AI quyết định] Đi ngẫu nhiên: {chosen_move} (epsilon={self.epsilon:.4f})")
+            if verbose:
+                print(f"[AI quyết định] Đi ngẫu nhiên: {chosen_move} (epsilon={self.epsilon:.4f})")
             return chosen_move
         
         # Chọn nước đi tốt nhất theo mô hình
@@ -298,7 +300,7 @@ class RLAgent(Agent):
             masked_q_values[valid_mask == 0] = float('-inf')
             
             # Lưu top 3 nước đi và giá trị Q cho debug
-            if len(valid_moves) >= 3:
+            if len(valid_moves) >= 3 and verbose:
                 top_k = min(3, len(valid_moves))
                 top_indices = torch.topk(masked_q_values, top_k).indices.cpu().numpy()
                 top_values = torch.topk(masked_q_values, top_k).values.cpu().numpy()
